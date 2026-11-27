@@ -7,6 +7,8 @@ import {
   ChevronLeft,
   ChevronRight,
   FilterX,
+  List,
+  LayoutGrid,
 } from 'lucide-react';
 import { taskService } from '../../services/task.service';
 import {
@@ -19,6 +21,7 @@ import {
 } from '../../types';
 import { TaskFilterBar } from './task-filter-bar';
 import { TaskItem } from './task-item';
+import { KanbanBoard } from './kanban-board';
 import { TaskModal } from './task-modal';
 import { TaskDetailModal } from './task-detail-modal';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
@@ -27,6 +30,8 @@ import { TaskRowSkeleton } from '../../components/ui/skeleton';
 import { Button } from '../../components/ui/button';
 import { useToast } from '../../components/ui/toast';
 import { getErrorMessage } from '../../lib/api-client';
+
+export type ViewMode = 'list' | 'board';
 
 export function TasksView({
   isCreateOpen,
@@ -37,6 +42,9 @@ export function TasksView({
 }) {
   const [tasksData, setTasksData] = useState<TaskListResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [createInitialStatus, setCreateInitialStatus] = useState<TaskStatus>('TODO');
+
   const [filters, setFilters] = useState<QueryTaskParams>({
     page: 1,
     limit: 8,
@@ -71,6 +79,15 @@ export function TasksView({
     fetchTasks();
   }, [fetchTasks]);
 
+  const handleViewModeChange = (mode: ViewMode) => {
+    setViewMode(mode);
+    setFilters((prev) => ({
+      ...prev,
+      page: 1,
+      limit: mode === 'board' ? 50 : 8,
+    }));
+  };
+
   const handleFilterChange = (newFilters: Partial<QueryTaskParams>) => {
     setFilters((prev) => ({ ...prev, ...newFilters }));
   };
@@ -78,7 +95,7 @@ export function TasksView({
   const handleResetFilters = () => {
     setFilters({
       page: 1,
-      limit: 8,
+      limit: viewMode === 'board' ? 50 : 8,
       search: '',
       status: '',
       priority: '',
@@ -94,6 +111,7 @@ export function TasksView({
       await taskService.createTask(data as CreateTaskInput);
       toast.success('Task created successfully!');
       setIsCreateOpen(false);
+      setCreateInitialStatus('TODO');
       fetchTasks();
     } catch (error) {
       toast.error(getErrorMessage(error));
@@ -118,15 +136,39 @@ export function TasksView({
     }
   };
 
-  // Status Change
-  const handleStatusChange = async (task: Task, status: TaskStatus) => {
+  // Status Change with Optimistic UI Update
+  const handleStatusChange = async (task: Task, newStatus: TaskStatus) => {
+    if (task.status === newStatus) return;
+
+    // Save previous state for potential rollback
+    const previousTasksData = tasksData;
+
+    // 1. Optimistic Update in local state
+    setTasksData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        data: prev.data.map((t) =>
+          t.id === task.id ? { ...t, status: newStatus } : t,
+        ),
+      };
+    });
+
     try {
-      await taskService.updateStatus(task.id, status);
-      toast.success(`Task status moved to ${status}`);
-      fetchTasks();
+      // 2. Persist to Backend API
+      await taskService.updateStatus(task.id, newStatus);
+      toast.success(`Moved to ${newStatus.replace('_', ' ')}`);
     } catch (error) {
-      toast.error(getErrorMessage(error));
+      // 3. Rollback on failure
+      setTasksData(previousTasksData);
+      toast.error(`Failed to update status: ${getErrorMessage(error)}`);
     }
+  };
+
+  // Quick Add from Kanban Column
+  const handleQuickAdd = (status: TaskStatus) => {
+    setCreateInitialStatus(status);
+    setIsCreateOpen(true);
   };
 
   // Delete Task
@@ -157,10 +199,45 @@ export function TasksView({
             Create, track, filter, and organize all your personal and team tasks.
           </p>
         </div>
-        <Button variant="primary" onClick={() => setIsCreateOpen(true)}>
-          <PlusCircle className="w-4 h-4 mr-2" />
-          Create New Task
-        </Button>
+
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+          {/* View Mode Switcher (List vs Kanban Board) */}
+          <div className="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200">
+            <button
+              onClick={() => handleViewModeChange('list')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                viewMode === 'list'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              <List className="w-3.5 h-3.5" />
+              List
+            </button>
+            <button
+              onClick={() => handleViewModeChange('board')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                viewMode === 'board'
+                  ? 'bg-white text-indigo-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              Board
+            </button>
+          </div>
+
+          <Button
+            variant="primary"
+            onClick={() => {
+              setCreateInitialStatus('TODO');
+              setIsCreateOpen(true);
+            }}
+          >
+            <PlusCircle className="w-4 h-4 mr-2" />
+            Create Task
+          </Button>
+        </div>
       </div>
 
       {/* Filter and Search Bar */}
@@ -170,50 +247,78 @@ export function TasksView({
         onReset={handleResetFilters}
       />
 
-      {/* Task List / Content */}
-      <div className="space-y-3">
-        {isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => <TaskRowSkeleton key={i} />)
-        ) : tasksData && tasksData.data.length > 0 ? (
-          tasksData.data.map((task) => (
-            <TaskItem
-              key={task.id}
-              task={task}
-              onView={(t) => setSelectedTask(t)}
-              onEdit={(t) => setEditingTask(t)}
-              onDelete={(t) => setDeletingTask(t)}
-              onStatusChange={handleStatusChange}
-            />
-          ))
+      {/* Main Task View: Kanban vs List */}
+      {viewMode === 'board' ? (
+        isLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="space-y-3">
+                <div className="h-10 bg-gray-200 animate-pulse rounded-lg" />
+                <div className="h-32 bg-gray-100 animate-pulse rounded-lg" />
+                <div className="h-32 bg-gray-100 animate-pulse rounded-lg" />
+              </div>
+            ))}
+          </div>
         ) : (
-          <EmptyState
-            icon={filters.search || filters.status || filters.priority ? FilterX : CheckSquare}
-            title={
-              filters.search || filters.status || filters.priority
-                ? 'No matching tasks found'
-                : 'No tasks created yet'
-            }
-            description={
-              filters.search || filters.status || filters.priority
-                ? 'Try adjusting your search criteria or resetting filters.'
-                : 'Get started by creating your very first task now.'
-            }
-            actionText={
-              filters.search || filters.status || filters.priority
-                ? 'Reset Filters'
-                : 'Create Task'
-            }
-            onAction={
-              filters.search || filters.status || filters.priority
-                ? handleResetFilters
-                : () => setIsCreateOpen(true)
-            }
+          <KanbanBoard
+            tasks={tasksData?.data || []}
+            onView={(t) => setSelectedTask(t)}
+            onEdit={(t) => setEditingTask(t)}
+            onDelete={(t) => setDeletingTask(t)}
+            onStatusChange={handleStatusChange}
+            onQuickAdd={handleQuickAdd}
           />
-        )}
-      </div>
+        )
+      ) : (
+        /* List View */
+        <div className="space-y-3">
+          {isLoading ? (
+            Array.from({ length: 4 }).map((_, i) => <TaskRowSkeleton key={i} />)
+          ) : tasksData && tasksData.data.length > 0 ? (
+            tasksData.data.map((task) => (
+              <TaskItem
+                key={task.id}
+                task={task}
+                onView={(t) => setSelectedTask(t)}
+                onEdit={(t) => setEditingTask(t)}
+                onDelete={(t) => setDeletingTask(t)}
+                onStatusChange={handleStatusChange}
+              />
+            ))
+          ) : (
+            <EmptyState
+              icon={
+                filters.search || filters.status || filters.priority
+                  ? FilterX
+                  : CheckSquare
+              }
+              title={
+                filters.search || filters.status || filters.priority
+                  ? 'No matching tasks found'
+                  : 'No tasks created yet'
+              }
+              description={
+                filters.search || filters.status || filters.priority
+                  ? 'Try adjusting your search criteria or resetting filters.'
+                  : 'Get started by creating your very first task now.'
+              }
+              actionText={
+                filters.search || filters.status || filters.priority
+                  ? 'Reset Filters'
+                  : 'Create Task'
+              }
+              onAction={
+                filters.search || filters.status || filters.priority
+                  ? handleResetFilters
+                  : () => setIsCreateOpen(true)
+              }
+            />
+          )}
+        </div>
+      )}
 
-      {/* Pagination Controls */}
-      {tasksData && tasksData.meta.totalPages > 1 && (
+      {/* Pagination Controls (Only in List View) */}
+      {viewMode === 'list' && tasksData && tasksData.meta.totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-gray-200 pt-4 px-2">
           <p className="text-xs text-gray-500">
             Showing Page{' '}
@@ -251,8 +356,12 @@ export function TasksView({
       {/* Create Task Modal */}
       <TaskModal
         isOpen={isCreateOpen}
-        onClose={() => setIsCreateOpen(false)}
+        onClose={() => {
+          setIsCreateOpen(false);
+          setCreateInitialStatus('TODO');
+        }}
         onSubmit={handleCreateTask}
+        initialStatus={createInitialStatus}
         isLoading={isSubmitting}
       />
 

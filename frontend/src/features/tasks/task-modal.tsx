@@ -27,6 +27,7 @@ export interface TaskModalProps {
   onClose: () => void;
   onSubmit: (data: TaskFormData) => Promise<void>;
   task?: Task | null;
+  initialStatus?: TaskStatus;
   isLoading?: boolean;
 }
 
@@ -35,6 +36,7 @@ export function TaskModal({
   onClose,
   onSubmit,
   task,
+  initialStatus = 'TODO',
   isLoading = false,
 }: TaskModalProps) {
   const isEditing = !!task;
@@ -49,7 +51,7 @@ export function TaskModal({
     defaultValues: {
       title: '',
       description: '',
-      status: 'TODO',
+      status: initialStatus,
       priority: 'MEDIUM',
       dueDate: '',
     },
@@ -68,12 +70,12 @@ export function TaskModal({
       reset({
         title: '',
         description: '',
-        status: 'TODO',
+        status: initialStatus,
         priority: 'MEDIUM',
         dueDate: '',
       });
     }
-  }, [task, reset, isOpen]);
+  }, [task, initialStatus, reset, isOpen]);
 
   const handleFormSubmit = async (data: TaskFormData) => {
     await onSubmit({
